@@ -47,8 +47,6 @@ pipeline {
             sh '''
               terraform plan -out=tfplan -input=false
               terraform show -no-color tfplan > tfplan.txt
-              echo "📤 Uploading plan file to S3..."
-              aws s3 cp tfplan.txt s3://${S3_BUCKET}/plans/${DEPLOY_ENV}/${JOB_NAME}-${BUILD_NUMBER}.txt
             '''
           }
         }
