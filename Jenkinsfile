@@ -50,17 +50,17 @@ stage('Checkov - IaC Security Scan') {
     echo "🛡️ Running Checkov on Terraform code..."
     sh '''
       echo "Current directory: $(pwd)"
-      CHECKOV_REPORT_PATH="$(pwd)/checkov-report.json"
+      mkdir -p reports
       checkov --directory environments/${DEPLOY_ENV} \
-              --output-file-path "$CHECKOV_REPORT_PATH" \
+              --output-file-path reports/checkov-report.json \
               --output json || echo "⚠️ Checkov found issues — review report"
-      echo "Checkov report generated at: $CHECKOV_REPORT_PATH"
+      echo "Checkov report generated at: $(pwd)/reports/checkov-report.json"
     '''
   }
   post {
     always {
       echo "Archiving Checkov report..."
-      archiveArtifacts artifacts: 'checkov-report.json', fingerprint: true
+      archiveArtifacts artifacts: '**/reports/checkov-report.json', fingerprint: true, allowEmptyArchive: true
     }
   }
 }
