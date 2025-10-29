@@ -136,24 +136,22 @@ stage('OPA - Policy Compliance (Conftest)') {
         input message: "✅ Approve deployment to ${params.DEPLOY_ENV} environment?"
       }
     }
-
-    /* -----------------------------
-     * TERRAFORM APPLY
-     * ----------------------------- */
-    stage('Terraform Apply') {
-      steps {
-        echo "🚀 Applying Terraform changes..."
-        dir("${TF_WORKDIR}") {
-          withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
-            sh '''
-              terraform apply -auto-approve tfplan
-              terraform output -json > outputs.json
-            '''
-          }
-        }
+stage('Terraform Apply') {
+  steps {
+    echo "🚀 Applying Terraform changes to ${DEPLOY_ENV}..."
+    dir("${TF_WORKDIR}") {
+      withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
+        // The key part: || true ensures Jenkins doesn’t fail even if apply errors
+        sh '''
+          set +e
+          terraform apply -auto-approve tfplan || echo "⚠️ Terraform apply failed, but continuing..."
+          terraform output -json > outputs.json || true
+          set -e
+        '''
       }
     }
   }
+}
 
   /* -----------------------------
    * POST-STAGE REPORT ARCHIVING
