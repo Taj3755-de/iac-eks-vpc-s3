@@ -45,46 +45,53 @@ pipeline {
       }
     }
 
-stage('Checkov - IaC Security Scan') {
-  steps {
-    echo "🛡️ Running Checkov on Terraform code..."
-    sh '''
-      echo "Current directory: $(pwd)"
-      mkdir -p reports
-      checkov --directory environments/${DEPLOY_ENV} \
-              --output-file-path reports/checkov-report.json \
-              --output json || echo "⚠️ Checkov found issues — review report"
-      echo "Checkov report generated at: $(pwd)/reports/checkov-report.json"
-    '''
-  }
-  post {
-    always {
-      echo "Archiving Checkov report..."
-      archiveArtifacts artifacts: '**/reports/checkov-report.json', fingerprint: true, allowEmptyArchive: true
+    /* -----------------------------
+     * CHECKOV SECURITY SCAN
+     * ----------------------------- */
+    stage('Checkov - IaC Security Scan') {
+      steps {
+        echo "🛡️ Running Checkov on Terraform code..."
+        sh '''
+          echo "Current directory: $(pwd)"
+          mkdir -p reports
+          checkov --directory environments/${DEPLOY_ENV} \
+                  --output-file-path reports/checkov-report.json \
+                  --output json || echo "⚠️ Checkov found issues — review report"
+          echo "Checkov report generated at: $(pwd)/reports/checkov-report.json"
+        '''
+      }
+      post {
+        always {
+          echo "Archiving Checkov report..."
+          archiveArtifacts artifacts: '**/reports/checkov-report.json', fingerprint: true, allowEmptyArchive: true
+        }
+      }
     }
-  }
-}
 
-stage('OPA - Policy Compliance (Conftest)') {
-  steps {
-    echo "🧩 Running OPA Conftest policy checks..."
-    sh '''
-      echo "Current directory: $(pwd)"
-      OPA_REPORT_PATH="$(pwd)/opa-report.json"
-      docker run --rm -v $(pwd):/project openpolicyagent/conftest \
-        test /project/environments/${DEPLOY_ENV} \
-        --policy /project/policy \
-        --output json > "$OPA_REPORT_PATH" || echo "⚠️ OPA policy violations found — review report"
-      echo "OPA report generated at: $OPA_REPORT_PATH"
-    '''
-  }
-  post {
-    always {
-      echo "Archiving OPA report..."
-      archiveArtifacts artifacts: 'opa-report.json', fingerprint: true
+    /* -----------------------------
+     * OPA POLICY CHECKS
+     * ----------------------------- */
+    stage('OPA - Policy Compliance (Conftest)') {
+      steps {
+        echo "🧩 Running OPA Conftest policy checks..."
+        sh '''
+          echo "Current directory: $(pwd)"
+          OPA_REPORT_PATH="$(pwd)/opa-report.json"
+          docker run --rm -v $(pwd):/project openpolicyagent/conftest \
+            test /project/environments/${DEPLOY_ENV} \
+            --policy /project/policy \
+            --output json > "$OPA_REPORT_PATH" || echo "⚠️ OPA policy violations found — review report"
+          echo "OPA report generated at: $OPA_REPORT_PATH"
+        '''
+      }
+      post {
+        always {
+          echo "Archiving OPA report..."
+          archiveArtifacts artifacts: 'opa-report.json', fingerprint: true, allowEmptyArchive: true
+        }
+      }
     }
-  }
-}
+
     /* -----------------------------
      * TERRAFORM INIT
      * ----------------------------- */
@@ -136,36 +143,41 @@ stage('OPA - Policy Compliance (Conftest)') {
         input message: "✅ Approve deployment to ${params.DEPLOY_ENV} environment?"
       }
     }
-stage('Terraform Apply') {
-  steps {
-    echo "🚀 Applying Terraform changes to ${DEPLOY_ENV}..."
-    dir("${TF_WORKDIR}") {
-      withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
-        // The key part: || true ensures Jenkins doesn’t fail even if apply errors
-        sh '''
-          set +e
-          terraform apply -auto-approve tfplan || echo "⚠️ Terraform apply failed, but continuing..."
-          terraform output -json > outputs.json || true
-          set -e
-        '''
+
+    /* -----------------------------
+     * TERRAFORM APPLY (TOLERANT)
+     * ----------------------------- */
+    stage('Terraform Apply') {
+      steps {
+        echo "🚀 Applying Terraform changes to ${DEPLOY_ENV}..."
+        dir("${TF_WORKDIR}") {
+          withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
+            // The key part: || true ensures Jenkins doesn’t fail even if apply errors
+            sh '''
+              set +e
+              terraform apply -auto-approve tfplan || echo "⚠️ Terraform apply failed, but continuing..."
+              terraform output -json > outputs.json || true
+              set -e
+            '''
+          }
+        }
       }
     }
   }
-}
 
   /* -----------------------------
    * POST-STAGE REPORT ARCHIVING
    * ----------------------------- */
   post {
     always {
-      echo "🧾 Archiving Terraform artifacts..."
-      archiveArtifacts artifacts: "${TF_WORKDIR}/tfplan.txt, ${TF_WORKDIR}/outputs.json, trufflehog-report.json, checkov-report.json, opa-report.json", fingerprint: true
+      echo "🧾 Archiving Terraform and security artifacts..."
+      archiveArtifacts artifacts: '**/*.json, **/tfplan.txt', fingerprint: true, allowEmptyArchive: true
     }
     success {
       echo "✅ Terraform deployment completed successfully for ${params.DEPLOY_ENV}!"
     }
     failure {
-      echo "❌ Terraform pipeline failed for ${params.DEPLOY_ENV}!"
+      echo "❌ Terraform pipeline failed for ${params.DEPLOY_ENV}! (Build may still be marked SUCCESS if AWS limits hit)"
     }
   }
 }
