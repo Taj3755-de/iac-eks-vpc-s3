@@ -45,45 +45,46 @@ pipeline {
       }
     }
 
-    /* -----------------------------
-     * IaC SECURITY SCAN - CHECKOV
-     * ----------------------------- */
-    stage('Checkov - IaC Security Scan') {
-      steps {
-        echo "🛡️ Running Checkov on Terraform code..."
-        sh '''
-          checkov --directory environments/${DEPLOY_ENV} \
-                  --output-file-path checkov-report.json \
-                  --output json || echo "⚠️ Checkov found issues — review report"
-        '''
-      }
-      post {
-        always {
-          archiveArtifacts artifacts: 'checkov-report.json', fingerprint: true
-        }
-      }
+stage('Checkov - IaC Security Scan') {
+  steps {
+    echo "🛡️ Running Checkov on Terraform code..."
+    sh '''
+      echo "Current directory: $(pwd)"
+      CHECKOV_REPORT_PATH="$(pwd)/checkov-report.json"
+      checkov --directory environments/${DEPLOY_ENV} \
+              --output-file-path "$CHECKOV_REPORT_PATH" \
+              --output json || echo "⚠️ Checkov found issues — review report"
+      echo "Checkov report generated at: $CHECKOV_REPORT_PATH"
+    '''
+  }
+  post {
+    always {
+      echo "Archiving Checkov report..."
+      archiveArtifacts artifacts: 'checkov-report.json', fingerprint: true
     }
+  }
+}
 
-    /* -----------------------------
-     * POLICY COMPLIANCE - OPA (CONTFEST)
-     * ----------------------------- */
-    stage('OPA - Policy Compliance (Conftest)') {
-      steps {
-        echo "📜 Running Conftest OPA policy checks..."
-        sh '''
-          docker run --rm -v $(pwd):/project openpolicyagent/conftest \
-            test /project/environments/${DEPLOY_ENV} \
-            --policy /project/policy \
-            --output json > opa-report.json || echo "⚠️ OPA policy violations found — review report"
-        '''
-      }
-      post {
-        always {
-          archiveArtifacts artifacts: 'opa-report.json', fingerprint: true
-        }
-      }
+stage('OPA - Policy Compliance (Conftest)') {
+  steps {
+    echo "🧩 Running OPA Conftest policy checks..."
+    sh '''
+      echo "Current directory: $(pwd)"
+      OPA_REPORT_PATH="$(pwd)/opa-report.json"
+      docker run --rm -v $(pwd):/project openpolicyagent/conftest \
+        test /project/environments/${DEPLOY_ENV} \
+        --policy /project/policy \
+        --output json > "$OPA_REPORT_PATH" || echo "⚠️ OPA policy violations found — review report"
+      echo "OPA report generated at: $OPA_REPORT_PATH"
+    '''
+  }
+  post {
+    always {
+      echo "Archiving OPA report..."
+      archiveArtifacts artifacts: 'opa-report.json', fingerprint: true
     }
-
+  }
+}
     /* -----------------------------
      * TERRAFORM INIT
      * ----------------------------- */
