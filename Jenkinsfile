@@ -169,4 +169,3 @@ stage('Terraform Apply') {
     }
   }
 }
-}
