@@ -67,9 +67,7 @@ pipeline {
             sh '''
               terraform apply -auto-approve tfplan
               terraform output -json > outputs.json
-              echo "📤 Uploading outputs to S3..."
-              aws s3 cp outputs.json s3://${S3_BUCKET}/outputs/${DEPLOY_ENV}/${JOB_NAME}-${BUILD_NUMBER}.json
-            '''
+              '''
           }
         }
       }
