@@ -7,6 +7,11 @@ pipeline {
       choices: ['dev', 'staging', 'prod'],
       description: 'Select the environment to deploy to'
     )
+    choice(
+      name: 'ACTION',
+      choices: ['apply', 'destroy'],
+      description: 'Select Terraform action (apply or destroy)'
+    )
   }
 
   environment {
@@ -22,17 +27,17 @@ pipeline {
      * ----------------------------- */
     stage('Checkout') {
       steps {
-        echo " Checking out source code..."
+        echo "Checking out source code..."
         checkout scm
       }
     }
 
     /* -----------------------------
-     * SECRET SCANNING
+     * SECURITY SCANS (apply only)
      * ----------------------------- */
     stage('TruffleHog - Secret Scan') {
+      when { expression { params.ACTION == 'apply' } }
       steps {
-        echo " Running TruffleHog secret scan..."
         sh '''
           docker run --rm -v $(pwd):/repo ghcr.io/trufflesecurity/trufflehog:latest \
             filesystem /repo --fail --json > trufflehog-report.json || echo "Secrets found — check report"
@@ -40,60 +45,48 @@ pipeline {
       }
       post {
         always {
-          archiveArtifacts artifacts: 'trufflehog-report.json', fingerprint: true
+          archiveArtifacts artifacts: 'trufflehog-report.json', fingerprint: true, allowEmptyArchive: true
         }
       }
     }
 
-    /* -----------------------------
-     * CHECKOV SECURITY SCAN
-     * ----------------------------- */
     stage('Checkov - IaC Security Scan') {
+      when { expression { params.ACTION == 'apply' } }
       steps {
-        echo "Running Checkov on Terraform code..."
         sh '''
-          echo "Current directory: $(pwd)"
           mkdir -p reports
           checkov --directory environments/${DEPLOY_ENV} \
                   --output-file-path reports/checkov-report.json \
-                  --output json || echo " Checkov found issues — review report"
-          echo "Checkov report generated at: $(pwd)/reports/checkov-report.json"
+                  --output json || echo "Checkov found issues — review report"
         '''
       }
       post {
         always {
-          echo "Archiving Checkov report..."
           archiveArtifacts artifacts: '**/reports/checkov-report.json', fingerprint: true, allowEmptyArchive: true
         }
       }
     }
 
-    /* -----------------------------
-     * OPA POLICY CHECKS
-     * ----------------------------- */
     stage('OPA - Policy Compliance (Conftest)') {
+      when { expression { params.ACTION == 'apply' } }
       steps {
-        echo "Running OPA Conftest policy checks..."
         sh '''
-          echo "Current directory: $(pwd)"
           OPA_REPORT_PATH="$(pwd)/opa-report.json"
           docker run --rm -v $(pwd):/project openpolicyagent/conftest \
             test /project/environments/${DEPLOY_ENV} \
             --policy /project/policy \
-            --output json > "$OPA_REPORT_PATH" || echo " OPA policy violations found — review report"
-          echo "OPA report generated at: $OPA_REPORT_PATH"
+            --output json > "$OPA_REPORT_PATH" || echo "OPA policy violations found — review report"
         '''
       }
       post {
         always {
-          echo "Archiving OPA report..."
           archiveArtifacts artifacts: 'opa-report.json', fingerprint: true, allowEmptyArchive: true
         }
       }
     }
 
     /* -----------------------------
-     * TERRAFORM INIT
+     * TERRAFORM INIT (always required)
      * ----------------------------- */
     stage('Terraform Init') {
       steps {
@@ -107,23 +100,20 @@ pipeline {
     }
 
     /* -----------------------------
-     * TERRAFORM VALIDATE
+     * APPLY PIPELINE
      * ----------------------------- */
     stage('Terraform Validate') {
+      when { expression { params.ACTION == 'apply' } }
       steps {
-        echo "Validating Terraform configuration..."
         dir("${TF_WORKDIR}") {
           sh 'terraform validate'
         }
       }
     }
 
-    /* -----------------------------
-     * TERRAFORM PLAN
-     * ----------------------------- */
     stage('Terraform Plan') {
+      when { expression { params.ACTION == 'apply' } }
       steps {
-        echo " Running Terraform plan for ${DEPLOY_ENV}..."
         dir("${TF_WORKDIR}") {
           withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
             sh '''
@@ -135,27 +125,21 @@ pipeline {
       }
     }
 
-    /* -----------------------------
-     * MANUAL APPROVAL
-     * ----------------------------- */
     stage('Manual Approval') {
+      when { expression { params.ACTION == 'apply' } }
       steps {
-        input message: " Approve deployment to ${params.DEPLOY_ENV} environment?"
+        input message: "Approve deployment to ${params.DEPLOY_ENV} environment?"
       }
     }
 
-    /* -----------------------------
-     * TERRAFORM APPLY (TOLERANT)
-     * ----------------------------- */
     stage('Terraform Apply') {
+      when { expression { params.ACTION == 'apply' } }
       steps {
-        echo "🚀 Applying Terraform changes to ${DEPLOY_ENV}..."
         dir("${TF_WORKDIR}") {
           withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
-            // The key part: || true ensures Jenkins doesn’t fail even if apply errors
             sh '''
               set +e
-              terraform apply -auto-approve tfplan || echo " Terraform apply failed at node_group creation due to the AWS free tiering, but continuing..."
+              terraform apply -auto-approve tfplan || echo "Terraform apply failed — continuing"
               terraform output -json > outputs.json || true
               set -e
             '''
@@ -163,21 +147,43 @@ pipeline {
         }
       }
     }
+
+    /* -----------------------------
+     * DESTROY PIPELINE
+     * ----------------------------- */
+    stage('Manual Destroy Approval') {
+      when { expression { params.ACTION == 'destroy' } }
+      steps {
+        input message: "⚠️ Confirm destroy for ${params.DEPLOY_ENV}? This will delete all resources!"
+      }
+    }
+
+    stage('Terraform Destroy') {
+      when { expression { params.ACTION == 'destroy' } }
+      steps {
+        echo "🔥 Destroying Terraform resources in ${DEPLOY_ENV}..."
+        dir("${TF_WORKDIR}") {
+          withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
+            sh '''
+              terraform init -input=false
+              terraform destroy -auto-approve
+            '''
+          }
+        }
+      }
+    }
   }
 
-  /* -----------------------------
-   * POST-STAGE REPORT ARCHIVING
-   * ----------------------------- */
   post {
     always {
       echo "🧾 Archiving Terraform and security artifacts..."
       archiveArtifacts artifacts: '**/*.json, **/tfplan.txt', fingerprint: true, allowEmptyArchive: true
     }
     success {
-      echo "Terraform deployment completed successfully for ${params.DEPLOY_ENV}!"
+      echo "✅ Terraform ${params.ACTION} completed successfully for ${params.DEPLOY_ENV}!"
     }
     failure {
-      echo "Terraform pipeline failed for ${params.DEPLOY_ENV}! (Build may still be marked SUCCESS if AWS limits hit)"
+      echo "❌ Terraform ${params.ACTION} failed for ${params.DEPLOY_ENV}!"
     }
   }
 }
