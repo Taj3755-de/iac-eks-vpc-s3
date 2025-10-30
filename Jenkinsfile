@@ -165,6 +165,7 @@ pipeline {
         dir("${TF_WORKDIR}") {
           withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
             sh '''
+            terraform force-unlock -force 69202787-f080-7c5d-5f09-621ecf32b126 || true
               terraform init -input=false
               terraform destroy -auto-approve
             '''
